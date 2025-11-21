@@ -2,6 +2,8 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const stripe = require("stripe")(process.env.STRIPE_KEY);
+
 const app = express();
 const port = process.env.PORT || 5000;
 
@@ -43,8 +45,8 @@ app.get("/parcels", async (req, res) => {
     if (email) {
       query.senderEmail = email;
     }
-
-    const result = await parcelCollection.find(query).toArray();
+    const options = { sort: { createAt: -1 } };
+    const result = await parcelCollection.find(query, options).toArray();
     res
       .status(200)
       .send({ message: "parcel data successfully connect", result });
@@ -69,7 +71,7 @@ app.get("/parcels/:id", async (req, res) => {
 app.post("/parcels", async (req, res) => {
   try {
     const newParcels = req.body;
-    const create_at = new Date();
+    newParcels.createAt = new Date();
     const result = await parcelCollection.insertOne(newParcels);
     res.status(201).send({ message: "parcel post success", result });
   } catch (error) {
@@ -86,6 +88,35 @@ app.delete("/parcels/:id", async (req, res) => {
   } catch (error) {
     res.status(500).send({ message: "Intarnal server error" });
   }
+});
+
+//===== payment releted api ============//
+app.post("/stripe-checkout-sessions", async (req, res) => {
+  const paymentInfo = req.body;
+  const amount = parseInt(paymentInfo.cost) * 100;
+  const session = await stripe.checkout.sessions.create({
+    line_items: [
+      {
+        price_data: {
+          currency: "USD",
+          unit_amount: amount,
+          product_data: {
+            name: paymentInfo.parcelName,
+          },
+        },
+        quantity: 1,
+      },
+    ],
+    customer_email: paymentInfo.senderEmail,
+    mode: "payment",
+    metadata: {
+      parcelId: paymentInfo.parcelId,
+    },
+    success_url: `${process.env.SITE_DOMIN}/dashboard/payment-success`,
+    cancel_url: `${process.env.SITE_DOMIN}/dashboard/payment-cancelled`,
+  });
+  console.log(session);
+  res.send({ url: session.url });
 });
 
 app.get("/", (req, res) => {
