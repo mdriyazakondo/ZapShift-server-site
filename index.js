@@ -21,6 +21,36 @@ function generateTrackingId() {
 app.use(cors());
 app.use(express.json());
 
+// varify firebase token
+
+const admin = require("firebase-admin");
+
+const serviceAccount = require("./firebase-token-key.json");
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
+
+const varifyFirebaseToken = async (req, res, next) => {
+  const varifyToken = req.headers.authorization;
+  if (!varifyToken) {
+    return res.status(401).send({ message: "unauthorized access" });
+  }
+  const token = varifyToken.split(" ")[1];
+  if (!token) {
+    return res.status(401).send({ message: "unauthorized access" });
+  }
+
+  try {
+    const decoded = await admin.auth().verifyIdToken(token);
+    console.log("decoded in the token", decoded);
+    req.decoded_email = decoded.email;
+    next();
+  } catch (error) {
+    return res.status(401).send({ message: "unauthorized access" });
+  }
+};
+
 // mogodb connect
 const uri = process.env.DB_URL;
 const client = new MongoClient(uri, {
@@ -44,8 +74,42 @@ client
   });
 
 const db = client.db("zap_shit_db");
+const userCollection = db.collection("users");
 const parcelCollection = db.collection("parcels");
 const paymentCollection = db.collection("payments");
+
+//====== Users Releted Apis
+app.get("/users", async (req, res) => {
+  const result = await userCollection.find().toArray();
+  res.send({ message: "users successfully get", result });
+});
+
+app.get("/users/:id", async (req, res) => {
+  const id = req.params.id;
+  const query = { _id: new ObjectId(id) };
+  const result = await userCollection.findOne(query);
+  res.send({ message: "single user successfully get", result });
+});
+
+app.post("/users", async (req, res) => {
+  const newUser = req.body;
+  newUser.role = "user";
+  newUser.createAt = new Date();
+  const email = newUser.email;
+  const userExit = await userCollection.findOne({ email });
+  if (userExit) {
+    return res.status(409).send({ message: "User already exists" });
+  }
+  const result = await userCollection.insertOne(newUser);
+  res.send({ message: "user create successfully", result });
+});
+
+app.get("/users/:id", async (req, res) => {
+  const id = req.params.id;
+  const query = { _id: new ObjectId(id) };
+  const result = await userCollection.deleteOne(query);
+  res.send({ message: "single user successfully get", result });
+});
 
 //======== parcel api ================//
 app.get("/parcels", async (req, res) => {
@@ -213,13 +277,19 @@ app.patch("/payment-success", async (req, res) => {
 });
 
 // payment releted history
-app.get("/payments", async (req, res) => {
+app.get("/payments", varifyFirebaseToken, async (req, res) => {
   const email = req.query.email;
   const query = {};
   if (email) {
     query.customerEmail = email;
+    if (email !== req.decoded_email) {
+      return res.status(403).send({ message: "request forbidden access" });
+    }
   }
-  const result = await paymentCollection.find(query).toArray();
+  const result = await paymentCollection
+    .find(query)
+    .sort({ paymentA: -1 })
+    .toArray();
   res.send({ message: "payments successfully", result });
 });
 
