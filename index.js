@@ -77,6 +77,7 @@ const db = client.db("zap_shit_db");
 const userCollection = db.collection("users");
 const parcelCollection = db.collection("parcels");
 const paymentCollection = db.collection("payments");
+const riderCollection = db.collection("riders");
 
 //====== Users Releted Apis
 app.get("/users", async (req, res) => {
@@ -291,6 +292,27 @@ app.get("/payments", varifyFirebaseToken, async (req, res) => {
     .sort({ paymentA: -1 })
     .toArray();
   res.send({ message: "payments successfully", result });
+});
+
+// Riders api
+app.get("/riders", async (req, res) => {
+  const query = {};
+  if (req.query.status) {
+    query.status = req.query.status;
+  }
+  const result = await riderCollection
+    .find(query)
+    .sort({ createAt: -1 })
+    .toArray();
+  res.send({ message: "all riders show", result });
+});
+
+app.post("/riders", async (req, res) => {
+  const newRiders = req.body;
+  newRiders.status = "pending";
+  newRiders.createAt = new Date();
+  const result = await riderCollection.insertOne(newRiders);
+  res.send({ message: "new riders created", result });
 });
 
 app.get("/", (req, res) => {
