@@ -31,6 +31,7 @@ admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
 
+// middleware
 const varifyFirebaseToken = async (req, res, next) => {
   const varifyToken = req.headers.authorization;
   if (!varifyToken) {
@@ -49,6 +50,16 @@ const varifyFirebaseToken = async (req, res, next) => {
   } catch (error) {
     return res.status(401).send({ message: "unauthorized access" });
   }
+};
+
+const varifyAdmin = async (req, res, next) => {
+  const email = req.decoded_email;
+  const query = { email };
+  const user = await userCollection.findOne(query);
+  if (!user || user.role !== "admin") {
+    return res.status(403).send({ message: "forbidden accec admin" });
+  }
+  next();
 };
 
 // mogodb connect
@@ -80,16 +91,36 @@ const paymentCollection = db.collection("payments");
 const riderCollection = db.collection("riders");
 
 //====== Users Releted Apis
-app.get("/users", async (req, res) => {
-  const result = await userCollection.find().toArray();
+app.get("/users", varifyFirebaseToken, async (req, res) => {
+  const searchUser = req.query.search;
+  const query = {};
+
+  if (searchUser) {
+    query.$or = [
+      { displayName: { $regex: searchUser, $options: "i" } },
+      { email: { $regex: searchUser, $options: "i" } },
+    ];
+  }
+  const result = await userCollection
+    .find(query)
+    .sort({ createAt: -1 })
+    .limit(10)
+    .toArray();
   res.send({ message: "users successfully get", result });
 });
 
-app.get("/users/:id", async (req, res) => {
+app.get("/users/:id", varifyFirebaseToken, async (req, res) => {
   const id = req.params.id;
   const query = { _id: new ObjectId(id) };
   const result = await userCollection.findOne(query);
   res.send({ message: "single user successfully get", result });
+});
+
+app.get("/users/:email/role", async (req, res) => {
+  const email = req.params.email;
+  const query = { email };
+  const user = await userCollection.findOne(query);
+  res.send({ role: user?.role || "user" });
 });
 
 app.post("/users", async (req, res) => {
@@ -105,7 +136,25 @@ app.post("/users", async (req, res) => {
   res.send({ message: "user create successfully", result });
 });
 
-app.get("/users/:id", async (req, res) => {
+app.patch(
+  "/users/:id/role",
+  varifyFirebaseToken,
+  varifyAdmin,
+  async (req, res) => {
+    const id = req.params.id;
+    const roleInfo = req.body;
+    const query = { _id: new ObjectId(id) };
+    const updateDoc = {
+      $set: {
+        role: roleInfo.role,
+      },
+    };
+    const result = await userCollection.updateOne(query, updateDoc);
+    res.status(200).send({ message: "user role update successfully", result });
+  }
+);
+
+app.delete("/users/:id", async (req, res) => {
   const id = req.params.id;
   const query = { _id: new ObjectId(id) };
   const result = await userCollection.deleteOne(query);
@@ -300,10 +349,7 @@ app.get("/riders", async (req, res) => {
   if (req.query.status) {
     query.status = req.query.status;
   }
-  const result = await riderCollection
-    .find(query)
-    .sort({ createAt: -1 })
-    .toArray();
+  const result = await riderCollection.find(query).toArray();
   res.send({ message: "all riders show", result });
 });
 
@@ -313,6 +359,42 @@ app.post("/riders", async (req, res) => {
   newRiders.createAt = new Date();
   const result = await riderCollection.insertOne(newRiders);
   res.send({ message: "new riders created", result });
+});
+
+app.patch("/riders/:id", varifyFirebaseToken, varifyAdmin, async (req, res) => {
+  const status = req.body.status;
+  const id = req.params.id;
+  const query = { _id: new ObjectId(id) };
+  const updateDoc = {
+    $set: {
+      status: status,
+    },
+  };
+  const result = await riderCollection.updateOne(query, updateDoc);
+
+  if (status === "approved") {
+    const email = req.body.email;
+    const userQueary = { email };
+    const userUpdate = {
+      $set: {
+        role: "rider",
+      },
+    };
+    const userResult = await userCollection.updateOne(userQueary, userUpdate);
+    res.send({ result, userResult });
+  }
+  res.send({ message: "status update successfully", result });
+});
+
+app.delete("/riders/:id", varifyFirebaseToken, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const query = { _id: new ObjectId(id) };
+    const result = await riderCollection.deleteOne(query);
+    res.status(200).send({ message: "riders deleted successfully ", result });
+  } catch (error) {
+    res.status(500).send({ message: "Intarnal server error" });
+  }
 });
 
 app.get("/", (req, res) => {
