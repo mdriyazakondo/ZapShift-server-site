@@ -44,7 +44,6 @@ const varifyFirebaseToken = async (req, res, next) => {
 
   try {
     const decoded = await admin.auth().verifyIdToken(token);
-    console.log("decoded in the token", decoded);
     req.decoded_email = decoded.email;
     next();
   } catch (error) {
@@ -165,11 +164,15 @@ app.delete("/users/:id", async (req, res) => {
 app.get("/parcels", async (req, res) => {
   try {
     const query = {};
-    const { email } = req.query;
+    const { email, deliveryStatus } = req.query;
 
     if (email) {
       query.senderEmail = email;
     }
+    if (deliveryStatus) {
+      query.deliveryStatus = deliveryStatus;
+    }
+
     const options = { sort: { createAt: -1 } };
     const result = await parcelCollection.find(query, options).toArray();
     res
@@ -202,6 +205,32 @@ app.post("/parcels", async (req, res) => {
   } catch (error) {
     res.status(500).send({ message: "Intarnal server error" });
   }
+});
+
+app.patch("/parcels/:id", async (req, res) => {
+  const { riderId, riderNmae, riderEmail } = req.body;
+  const id = req.params.id;
+  const query = { _id: new ObjectId(id) };
+  const updateDoc = {
+    $set: {
+      deliveryStatus: "driver_assigned",
+      riderId: riderId,
+      riderNmae: riderNmae,
+      riderEmail: riderEmail,
+    },
+  };
+  const result = await parcelCollection.updateOne(query, updateDoc);
+  const riderQuery = { _id: new ObjectId(riderId) };
+  const riderUpdateDoc = {
+    $set: {
+      workStatus: "in_delivery",
+    },
+  };
+  const riderResult = await riderCollection.updateOne(
+    riderQuery,
+    riderUpdateDoc
+  );
+  res.send(riderResult);
 });
 
 app.delete("/parcels/:id", async (req, res) => {
@@ -272,7 +301,6 @@ app.post("/stripe-checkout-sessions", async (req, res) => {
     success_url: `${process.env.SITE_DOMIN}/dashboard/payment-success`,
     cancel_url: `${process.env.SITE_DOMIN}/dashboard/payment-cancelled`,
   });
-  console.log(session);
   res.send({ url: session.url });
 });
 
@@ -297,6 +325,7 @@ app.patch("/payment-success", async (req, res) => {
     const update = {
       $set: {
         payment_status: "paid",
+        deliveryStatus: "pending-pickup",
         trackingId: trackingId,
       },
     };
@@ -345,9 +374,16 @@ app.get("/payments", varifyFirebaseToken, async (req, res) => {
 
 // Riders api
 app.get("/riders", async (req, res) => {
+  const { status, district, workStatus } = req.query;
   const query = {};
-  if (req.query.status) {
+  if (status) {
     query.status = req.query.status;
+  }
+  if (district) {
+    query.district = district;
+  }
+  if (workStatus) {
+    query.workStatus = workStatus;
   }
   const result = await riderCollection.find(query).toArray();
   res.send({ message: "all riders show", result });
@@ -368,6 +404,7 @@ app.patch("/riders/:id", varifyFirebaseToken, varifyAdmin, async (req, res) => {
   const updateDoc = {
     $set: {
       status: status,
+      workStatus: "available",
     },
   };
   const result = await riderCollection.updateOne(query, updateDoc);
