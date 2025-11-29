@@ -88,6 +88,19 @@ const userCollection = db.collection("users");
 const parcelCollection = db.collection("parcels");
 const paymentCollection = db.collection("payments");
 const riderCollection = db.collection("riders");
+const trackingCollection = db.collection("trackings");
+
+//====== tracking function =======//
+const logTracking = async (trackingId, status) => {
+  const log = {
+    trackingId,
+    status,
+    details: status.split("-").join(" "),
+    createAt: new Date(),
+  };
+  const result = await trackingCollection.insertOne(log);
+  return result;
+};
 
 //====== Users Releted Apis
 app.get("/users", varifyFirebaseToken, async (req, res) => {
@@ -183,6 +196,23 @@ app.get("/parcels", async (req, res) => {
   }
 });
 
+app.get("/parcels/rider", async (req, res) => {
+  const { riderEmail, deliveryStatus } = req.query;
+  const query = {};
+  if (riderEmail) {
+    query.riderEmail = riderEmail;
+  }
+  if (deliveryStatus !== "parcel_delivered") {
+    query.deliveryStatus = {
+      $nin: ["parcel_delivered"],
+    };
+  } else {
+    query.deliveryStatus = deliveryStatus;
+  }
+  const result = await parcelCollection.find(query).toArray();
+  res.send({ message: "parcels rider successfully", result });
+});
+
 app.get("/parcels/:id", async (req, res) => {
   try {
     const id = req.params.id;
@@ -200,6 +230,9 @@ app.post("/parcels", async (req, res) => {
   try {
     const newParcels = req.body;
     newParcels.createAt = new Date();
+    const trackingId = generateTrackingId();
+    newParcels.trackingId = trackingId;
+    logTracking(trackingId, "parcel_created");
     const result = await parcelCollection.insertOne(newParcels);
     res.status(201).send({ message: "parcel post success", result });
   } catch (error) {
@@ -208,7 +241,7 @@ app.post("/parcels", async (req, res) => {
 });
 
 app.patch("/parcels/:id", async (req, res) => {
-  const { riderId, riderNmae, riderEmail } = req.body;
+  const { riderId, riderNmae, riderEmail, trackingId } = req.body;
   const id = req.params.id;
   const query = { _id: new ObjectId(id) };
   const updateDoc = {
@@ -230,7 +263,36 @@ app.patch("/parcels/:id", async (req, res) => {
     riderQuery,
     riderUpdateDoc
   );
+  //log traking
+  logTracking(trackingId, "driver_assigned");
   res.send(riderResult);
+});
+
+app.patch("/parcels/:id/status", async (req, res) => {
+  const { deliveryStatus, riderId, trackingId } = req.body;
+  const id = req.params.id;
+  const query = { _id: new ObjectId(id) };
+  const updateDoc = {
+    $set: {
+      deliveryStatus: deliveryStatus,
+    },
+  };
+  const result = await parcelCollection.updateOne(query, updateDoc);
+
+  if (deliveryStatus === "parcel_delivered") {
+    const riderQuery = { _id: new ObjectId(riderId) };
+    const riderUpdateDoc = {
+      $set: {
+        workStatus: "available",
+      },
+    };
+    const riderResult = await riderCollection.updateOne(
+      riderQuery,
+      riderUpdateDoc
+    );
+  }
+  logTracking(trackingId, deliveryStatus);
+  res.send({ message: "deliveryStatus update success", result });
 });
 
 app.delete("/parcels/:id", async (req, res) => {
@@ -245,8 +307,8 @@ app.delete("/parcels/:id", async (req, res) => {
 });
 
 //===== payment releted api ============//
-// new api
 
+// new api
 app.post("/payment-checkout-session", async (req, res) => {
   const paymentInfo = req.body;
   const amout = parseInt(paymentInfo.cost) * 100;
@@ -267,6 +329,7 @@ app.post("/payment-checkout-session", async (req, res) => {
     metadata: {
       parcelId: paymentInfo.parcelId,
       parcelName: paymentInfo.parcelName,
+      trackingId: paymentInfo.trackingId,
     },
     mode: "payment",
     success_url: `${process.env.SITE_DOMIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
@@ -277,32 +340,32 @@ app.post("/payment-checkout-session", async (req, res) => {
 });
 
 // old api
-app.post("/stripe-checkout-sessions", async (req, res) => {
-  const paymentInfo = req.body;
-  const amount = parseInt(paymentInfo.cost) * 100;
-  const session = stripe.checkout.sessions.create({
-    line_items: [
-      {
-        price_data: {
-          currency: "USD",
-          unit_amount: amount,
-          product_data: {
-            name: paymentInfo.parcelName,
-          },
-        },
-        quantity: 1,
-      },
-    ],
-    customer_email: paymentInfo.senderEmail,
-    mode: "payment",
-    metadata: {
-      parcelId: paymentInfo.parcelId,
-    },
-    success_url: `${process.env.SITE_DOMIN}/dashboard/payment-success`,
-    cancel_url: `${process.env.SITE_DOMIN}/dashboard/payment-cancelled`,
-  });
-  res.send({ url: session.url });
-});
+// app.post("/stripe-checkout-sessions", async (req, res) => {
+//   const paymentInfo = req.body;
+//   const amount = parseInt(paymentInfo.cost) * 100;
+//   const session = stripe.checkout.sessions.create({
+//     line_items: [
+//       {
+//         price_data: {
+//           currency: "USD",
+//           unit_amount: amount,
+//           product_data: {
+//             name: paymentInfo.parcelName,
+//           },
+//         },
+//         quantity: 1,
+//       },
+//     ],
+//     customer_email: paymentInfo.senderEmail,
+//     mode: "payment",
+//     metadata: {
+//       parcelId: paymentInfo.parcelId,
+//     },
+//     success_url: `${process.env.SITE_DOMIN}/dashboard/payment-success`,
+//     cancel_url: `${process.env.SITE_DOMIN}/dashboard/payment-cancelled`,
+//   });
+//   res.send({ url: session.url });
+// });
 
 app.patch("/payment-success", async (req, res) => {
   const sessionId = req.query.session_id;
@@ -318,7 +381,7 @@ app.patch("/payment-success", async (req, res) => {
     });
   }
 
-  const trackingId = generateTrackingId();
+  const trackingId = session.metadata.trackingId;
   if (session.payment_status === "paid") {
     const id = session.metadata.parcelId;
     const query = { _id: new ObjectId(id) };
@@ -326,7 +389,6 @@ app.patch("/payment-success", async (req, res) => {
       $set: {
         payment_status: "paid",
         deliveryStatus: "pending-pickup",
-        trackingId: trackingId,
       },
     };
     const result = await parcelCollection.updateOne(query, update);
@@ -343,6 +405,7 @@ app.patch("/payment-success", async (req, res) => {
     };
     if (session.payment_status === "paid") {
       const resultPayment = await paymentCollection.insertOne(payment);
+      logTracking(trackingId, "parcel_paid");
       return res.send({
         success: true,
         modifyParcel: result,
@@ -355,7 +418,7 @@ app.patch("/payment-success", async (req, res) => {
   return res.send({ success: false });
 });
 
-// payment releted history
+//======= payment releted history   ==========//
 app.get("/payments", varifyFirebaseToken, async (req, res) => {
   const email = req.query.email;
   const query = {};
@@ -372,7 +435,7 @@ app.get("/payments", varifyFirebaseToken, async (req, res) => {
   res.send({ message: "payments successfully", result });
 });
 
-// Riders api
+//=====Riders api =======//
 app.get("/riders", async (req, res) => {
   const { status, district, workStatus } = req.query;
   const query = {};
@@ -432,6 +495,14 @@ app.delete("/riders/:id", varifyFirebaseToken, async (req, res) => {
   } catch (error) {
     res.status(500).send({ message: "Intarnal server error" });
   }
+});
+
+//===== traking api =====//
+app.get("/trackings/:trackingId/logs", async (req, res) => {
+  const trackingId = req.params.trackingId;
+  const query = { trackingId };
+  const result = await trackingCollection.find(query).toArray();
+  res.send({ message: "tracking details success", result });
 });
 
 app.get("/", (req, res) => {
