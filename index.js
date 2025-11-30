@@ -26,6 +26,7 @@ app.use(express.json());
 const admin = require("firebase-admin");
 
 const serviceAccount = require("./firebase-token-key.json");
+const { lookup } = require("dns");
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -56,6 +57,15 @@ const varifyAdmin = async (req, res, next) => {
   const query = { email };
   const user = await userCollection.findOne(query);
   if (!user || user.role !== "admin") {
+    return res.status(403).send({ message: "forbidden accec admin" });
+  }
+  next();
+};
+const varifyRider = async (req, res, next) => {
+  const email = req.decoded_email;
+  const query = { email };
+  const user = await userCollection.findOne(query);
+  if (!user || user.role !== "rider") {
     return res.status(403).send({ message: "forbidden accec admin" });
   }
   next();
@@ -224,6 +234,25 @@ app.get("/parcels/:id", async (req, res) => {
   } catch (error) {
     res.status(500).send({ message: "Intarnal server error" });
   }
+});
+
+app.get("/parcels/delivery-status/stats", async (req, res) => {
+  const pipeline = [
+    {
+      $group: {
+        _id: "$deliveryStatus",
+        count: { $sum: 1 },
+      },
+    },
+    {
+      $project: {
+        status: "$_id",
+        count: 1,
+      },
+    },
+  ];
+  const result = await parcelCollection.aggregate(pipeline).toArray();
+  res.send({ messge: "pileline create new success", result });
 });
 
 app.post("/parcels", async (req, res) => {
@@ -403,17 +432,16 @@ app.patch("/payment-success", async (req, res) => {
       paymentA: new Date(),
       trackingId: trackingId,
     };
-    if (session.payment_status === "paid") {
-      const resultPayment = await paymentCollection.insertOne(payment);
-      logTracking(trackingId, "parcel_paid");
-      return res.send({
-        success: true,
-        modifyParcel: result,
-        trackingId: trackingId,
-        transictionId: session.payment_intent,
-        paymentInfo: resultPayment,
-      });
-    }
+
+    const resultPayment = await paymentCollection.insertOne(payment);
+    logTracking(trackingId, "parcel_paid");
+    return res.send({
+      success: true,
+      modifyParcel: result,
+      trackingId: trackingId,
+      transictionId: session.payment_intent,
+      paymentInfo: resultPayment,
+    });
   }
   return res.send({ success: false });
 });
@@ -450,6 +478,36 @@ app.get("/riders", async (req, res) => {
   }
   const result = await riderCollection.find(query).toArray();
   res.send({ message: "all riders show", result });
+});
+
+app.get("/riders/delivery-per-day", async (req, res) => {
+  const email = req.query.email;
+  const pipeline = [
+    {
+      $match: {
+        riderEmail: email,
+        deliveryStatus: "parcel_delivered",
+      },
+    },
+    {
+      $lookup: {
+        from: "trackings",
+        localFiled: "trackingId",
+        foreignFiled: "trackingId",
+        as: "parcels_trackings",
+      },
+    },
+    {
+      $unwind: "$parcels_trackings",
+    },
+    {
+      $match: {
+        "parcels_trackings.status": "parcel_delivered",
+      },
+    },
+  ];
+  const result = await parcelCollection.aggregate(pipeline).toArray();
+  res.send({ message: "rider success", result });
 });
 
 app.post("/riders", async (req, res) => {
